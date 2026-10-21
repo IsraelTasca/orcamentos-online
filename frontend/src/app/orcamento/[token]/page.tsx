@@ -4,6 +4,9 @@
 import { useEffect, useState } from "react"
 import { useParams } from "next/navigation"
 
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000"
+
 type ItemPublico = {
   id: string
   nome: string
@@ -52,7 +55,7 @@ export default function OrcamentoPublicoPage() {
         }
 
         const resposta = await fetch(
-          `http://127.0.0.1:8000/orcamentos/publico/${encodeURIComponent(
+          `${API_URL}/orcamentos/publico/${encodeURIComponent(
             token
           )}`
         )

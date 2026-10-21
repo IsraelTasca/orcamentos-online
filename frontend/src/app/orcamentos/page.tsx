@@ -1,8 +1,10 @@
-
 'use client'
 
 import { useEffect, useState } from 'react'
 import { supabase } from '../../../lib/supabase'
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
 
 type Cliente = {
   id: string
@@ -99,7 +101,7 @@ const estilos = {
     gap: '20px',
     alignItems: 'start',
   } as React.CSSProperties,
-} 
+}
 
 export default function OrcamentosPage() {
   const [clientes, setClientes] = useState<Cliente[]>([])
@@ -221,7 +223,7 @@ export default function OrcamentosPage() {
       }
 
       const resposta = await fetch(
-        'http://127.0.0.1:8000/teste-autenticacao',
+        `${API_URL}/teste-autenticacao`,
         {
           method: 'GET',
           headers: {
@@ -417,8 +419,7 @@ export default function OrcamentosPage() {
       currency: 'BRL',
     })
   }
-
-  async function salvarOrcamento() {
+    async function salvarOrcamento() {
     setMensagem('')
 
     if (!clienteId) {
@@ -477,7 +478,7 @@ export default function OrcamentosPage() {
       console.log('Enviando orçamento:', corpo)
 
       const resposta = await fetch(
-        'http://127.0.0.1:8000/orcamentos',
+        `${API_URL}/orcamentos`,
         {
           method: 'POST',
           headers: {
@@ -850,8 +851,7 @@ export default function OrcamentosPage() {
             </div>
           )}
         </section>
-
-        {/* ADICIONAR ITEM */}
+                {/* ADICIONAR ITEM */}
         <section style={estilos.cartao}>
           <div
             style={{
@@ -1311,8 +1311,7 @@ export default function OrcamentosPage() {
             </div>
           </div>
         </section>
-
-        {/* VALIDADE E OBSERVAÇÕES */}
+                {/* VALIDADE E OBSERVAÇÕES */}
         <section style={estilos.cartao}>
           <div
             style={{
