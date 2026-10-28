@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import urllib.error
 import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -13,6 +14,7 @@ from fastapi import (
     Depends,
     HTTPException,
     Header,
+    Request,
 )
 from fastapi.security import (
     HTTPBearer,
@@ -91,6 +93,11 @@ def exigir_configuracao_assinaturas():
             status_code=503,
             detail="MERCADO_PAGO_ACCESS_TOKEN não está configurado no backend."
         )
+    if not mercado_pago_webhook_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="MERCADO_PAGO_WEBHOOK_SECRET não está configurado no backend. Configure a assinatura secreta do webhook antes de contratar o Plus."
+        )
 
 
 def requisicao_mercado_pago(metodo: str, caminho: str, payload: Optional[dict] = None):
@@ -121,6 +128,15 @@ def requisicao_mercado_pago(metodo: str, caminho: str, payload: Optional[dict] =
     except urllib.error.HTTPError as erro:
         detalhe = erro.read().decode("utf-8", errors="replace")
         print("ERRO API MERCADO PAGO:", erro.code, detalhe[:1000])
+
+        # O 429 indica limitação temporária. Devolvemos 503 para que a falha
+        # fique explícita e o provedor possa tentar novamente quando aplicável.
+        if erro.code == 429:
+            raise HTTPException(
+                status_code=503,
+                detail="O Mercado Pago está limitando temporariamente as requisições. Tente novamente mais tarde."
+            )
+
         raise HTTPException(
             status_code=502,
             detail="O Mercado Pago não aceitou a solicitação. Confira o log do backend."
@@ -1244,7 +1260,7 @@ def criar_assinatura_plus(
     try:
         existentes = (
             supabase_admin.table("assinaturas")
-            .select("id, status, url_autorizacao, mercadopago_assinatura_id")
+            .select("id, status, referencia_externa, url_autorizacao, mercadopago_assinatura_id")
             .eq("empresa_id", empresa_id)
             .in_("status", ["pending", "authorized", "paused"])
             .order("created_at", desc=True)
@@ -1257,7 +1273,22 @@ def criar_assinatura_plus(
 
     if existentes:
         assinatura_existente = existentes[0]
-        if assinatura_existente.get("status") == "authorized":
+        status_existente = assinatura_existente.get("status")
+
+        # Regra definida para o produto: uma assinatura pausada bloqueia
+        # uma nova contratação até que a situação seja resolvida no Mercado Pago.
+        # Isso evita criar outra assinatura e possíveis cobranças duplicadas.
+        if status_existente == "paused":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Sua assinatura Plus está pausada no Mercado Pago. "
+                    "Resolva a situação da assinatura existente antes de "
+                    "iniciar uma nova contratação. Nenhuma nova assinatura foi criada."
+                ),
+            )
+
+        if status_existente == "authorized":
             return {
                 "mensagem": "A empresa já possui uma assinatura Plus autorizada.",
                 "status": "authorized",
@@ -1268,6 +1299,100 @@ def criar_assinatura_plus(
                 "mensagem": "Já existe uma assinatura aguardando autorização.",
                 "status": "pending",
                 "url_autorizacao": assinatura_existente["url_autorizacao"],
+            }
+
+        # Se a tentativa anterior deixou um registro pendente sem link, não criamos
+        # outra assinatura imediatamente. Primeiro procuramos no Mercado Pago pela
+        # referência externa original, que funciona como vínculo com nosso registro.
+        if assinatura_existente.get("status") == "pending":
+            referencia_pendente = assinatura_existente.get("referencia_externa")
+            if not referencia_pendente:
+                print("ASSINATURA PENDENTE SEM REFERÊNCIA EXTERNA:", assinatura_existente.get("id"))
+                raise HTTPException(
+                    status_code=503,
+                    detail="Existe uma assinatura pendente sem referência externa. É necessária uma verificação antes de tentar novamente.",
+                )
+
+            caminho_busca = "/preapproval/search?" + urllib.parse.urlencode({"q": referencia_pendente})
+            try:
+                resultado_busca = requisicao_mercado_pago("GET", caminho_busca)
+            except HTTPException:
+                # Falha na consulta não prova que a assinatura inexiste.
+                raise HTTPException(
+                    status_code=503,
+                    detail="Não foi possível verificar se a assinatura anterior foi criada. Tente novamente mais tarde; nenhuma nova assinatura foi criada.",
+                )
+
+            resultados = resultado_busca.get("results") or []
+            correspondencias = [
+                item for item in resultados
+                if str(item.get("external_reference", "")) == str(referencia_pendente)
+            ]
+
+            if len(correspondencias) > 1:
+                print("MAIS DE UMA ASSINATURA NO MERCADO PAGO PARA A MESMA REFERÊNCIA:", referencia_pendente)
+                raise HTTPException(
+                    status_code=503,
+                    detail="Foram encontradas várias assinaturas para a mesma referência. É necessária uma verificação antes de continuar.",
+                )
+
+            if not correspondencias:
+                # A busca pode não refletir imediatamente uma criação recente. Por
+                # segurança, não criamos outra assinatura automaticamente aqui.
+                raise HTTPException(
+                    status_code=503,
+                    detail="A assinatura anterior ainda não foi localizada no Mercado Pago. Tente novamente mais tarde; nenhuma nova assinatura foi criada para evitar duplicidade.",
+                )
+
+            assinatura_mp_recuperada = correspondencias[0]
+            mp_id_recuperado = assinatura_mp_recuperada.get("id")
+            url_recuperada = (
+                assinatura_mp_recuperada.get("init_point")
+                or assinatura_mp_recuperada.get("sandbox_init_point")
+            )
+            status_recuperado = str(assinatura_mp_recuperada.get("status", "")).lower()
+
+            if mp_id_recuperado and not url_recuperada:
+                try:
+                    detalhe_mp = requisicao_mercado_pago("GET", f"/preapproval/{mp_id_recuperado}")
+                    # Só aceitamos o detalhe se ele confirmar a mesma referência.
+                    if str(detalhe_mp.get("external_reference", "")) == str(referencia_pendente):
+                        url_recuperada = detalhe_mp.get("init_point") or detalhe_mp.get("sandbox_init_point")
+                        status_recuperado = str(detalhe_mp.get("status", status_recuperado)).lower()
+                except HTTPException:
+                    # Não criamos outra assinatura se a consulta de detalhe falhar.
+                    raise HTTPException(
+                        status_code=503,
+                        detail="A assinatura foi localizada, mas não foi possível recuperar seus dados. Tente novamente mais tarde.",
+                    )
+
+            if not mp_id_recuperado or not url_recuperada:
+                print("ASSINATURA LOCALIZADA NO MERCADO PAGO, MAS SEM ID OU LINK:", referencia_pendente)
+                raise HTTPException(
+                    status_code=503,
+                    detail="A assinatura foi localizada, mas o Mercado Pago não retornou todos os dados necessários. Tente novamente mais tarde.",
+                )
+
+            # Não ativamos o Plus aqui: a ativação continua dependendo do webhook validado.
+            try:
+                supabase_admin.table("assinaturas").update({
+                    "mercadopago_assinatura_id": str(mp_id_recuperado),
+                    "url_autorizacao": url_recuperada,
+                    "status": "pending",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", assinatura_existente["id"]).execute()
+            except Exception as erro:
+                print("ERRO AO RECUPERAR REGISTRO DE ASSINATURA:", erro)
+                raise HTTPException(
+                    status_code=500,
+                    detail="A assinatura foi localizada no Mercado Pago, mas não foi possível atualizar o registro local.",
+                )
+
+            return {
+                "mensagem": "Recuperamos a assinatura anterior. Abra o link para autorizar a cobrança mensal.",
+                "status": "pending",
+                "url_autorizacao": url_recuperada,
+                "public_key": mercado_pago_public_key,
             }
 
     referencia = "orcplus_" + secrets.token_urlsafe(24)
@@ -1321,7 +1446,8 @@ def criar_assinatura_plus(
         supabase_admin.table("assinaturas").update({
             "mercadopago_assinatura_id": str(mp_id),
             "url_autorizacao": url_autorizacao,
-            "status": "authorized" if status_mp == "authorized" else "pending",
+            # A autorização efetiva do plano é aplicada exclusivamente pelo webhook validado.
+            "status": "pending",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("referencia_externa", referencia).execute()
     except Exception as erro:
@@ -1362,6 +1488,7 @@ def obter_minha_assinatura(
 
 @app.post("/webhooks/mercado-pago")
 def webhook_mercado_pago(
+    request: Request,
     payload: dict,
     x_signature: Optional[str] = Header(default=None, alias="x-signature"),
     x_request_id: Optional[str] = Header(default=None, alias="x-request-id"),
@@ -1375,27 +1502,70 @@ def webhook_mercado_pago(
         raise HTTPException(status_code=503, detail="MERCADO_PAGO_WEBHOOK_SECRET não está configurada.")
 
     dados = payload.get("data") or {}
-    data_id = dados.get("id") or payload.get("id")
-    tipo = payload.get("type") or payload.get("topic") or ""
+    data_id = request.query_params.get("data.id")
+    tipo = payload.get("type") or payload.get("topic") or ""    
     if not data_id:
         raise HTTPException(status_code=400, detail="Notificação sem data.id.")
 
-    # Aceita apenas eventos de assinatura. Não processa notificações de pagamento genéricas.
-    if tipo not in {"subscription_preapproval", "preapproval", "subscription_authorized_payment"}:
-        return {"recebido": True, "ignorado": True, "motivo": "Tipo de notificação não utilizado por esta rota."}
+    # Aceita apenas eventos relacionados a assinaturas e cobranças recorrentes.
+    if tipo not in {
+        "subscription_preapproval",
+        "preapproval",
+        "subscription_authorized_payment",
+    }:
+        return {
+            "recebido": True,
+            "ignorado": True,
+            "motivo": "Tipo de notificação não utilizado por esta rota.",
+        }
 
-    if not validar_assinatura_webhook(x_signature, x_request_id, str(data_id)):
-        raise HTTPException(status_code=401, detail="Assinatura do webhook inválida ou ausente.")
+    if not validar_assinatura_webhook(
+        x_signature, x_request_id, str(data_id)
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Assinatura do webhook inválida ou ausente.",
+        )
 
-    # Nunca confiamos no status que vem no corpo do webhook: consultamos o objeto na API.
-    assinatura_mp = requisicao_mercado_pago("GET", f"/preapproval/{str(data_id)}")
+    # Para notificações de cobrança recorrente, primeiro identificamos
+    # a assinatura relacionada por meio do recurso de cobrança.
+    if tipo == "subscription_authorized_payment":
+        pagamento_mp = requisicao_mercado_pago(
+            "GET", f"/authorized_payments/{str(data_id)}"
+        )
+        preapproval_id = pagamento_mp.get("preapproval_id")
+
+        if not preapproval_id:
+            print(
+                "COBRANÇA SEM preapproval_id:",
+                data_id,
+            )
+            return {
+                "recebido": True,
+                "ignorado": True,
+                "motivo": "Cobrança sem identificação da assinatura.",
+            }
+
+        id_consulta = str(preapproval_id)
+    else:
+        id_consulta = str(data_id)
+
+    # Nunca confiamos no status que vem no corpo do webhook:
+    # consultamos o objeto de assinatura na API oficial.
+    assinatura_mp = requisicao_mercado_pago(
+        "GET", f"/preapproval/{id_consulta}"
+    )
     referencia = assinatura_mp.get("external_reference")
     status_mp = str(assinatura_mp.get("status", "")).lower()
-    mp_id = str(assinatura_mp.get("id", data_id))
+    mp_id = str(assinatura_mp.get("id", id_consulta))
 
     if not referencia:
         print("WEBHOOK SEM external_reference PARA A ASSINATURA:", mp_id)
-        return {"recebido": True, "ignorado": True, "motivo": "Assinatura sem referência externa."}
+        return {
+            "recebido": True,
+            "ignorado": True,
+            "motivo": "Assinatura sem referência externa.",
+        }
 
     mapa_status = {
         "authorized": "authorized",
@@ -1406,6 +1576,7 @@ def webhook_mercado_pago(
         "rejected": "rejected",
         "expired": "expired",
     }
+
     status_local = mapa_status.get(status_mp)
     if not status_local:
         print("STATUS MERCADO PAGO NÃO MAPEADO:", status_mp)
@@ -1432,20 +1603,48 @@ def webhook_mercado_pago(
 
     registro = registros[0]
     try:
-        supabase_admin.table("assinaturas").update({
+        # Atualiza o status local sem apagar inicio_em em notificações que não
+        # representam uma nova autorização.
+        atualizacao_assinatura = {
             "status": status_local,
-            "inicio_em": assinatura_mp.get("date_created") if status_local == "authorized" else None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", registro["id"]).execute()
+        }
+        if status_local == "authorized":
+            atualizacao_assinatura["inicio_em"] = assinatura_mp.get("date_created") or datetime.now(timezone.utc).isoformat()
 
-        # O plano é alterado somente após validar a assinatura do webhook e consultar a API.
-        novo_plano_id = plano_plus_id if status_local == "authorized" else plano_gratuito_id
-        supabase_admin.table("empresas").update({
-            "plano_id": novo_plano_id,
-        }).eq("id", registro["empresa_id"]).execute()
+        supabase_admin.table("assinaturas").update(
+            atualizacao_assinatura
+        ).eq("id", registro["id"]).execute()
+
+        # Uma assinatura autorizada pode ativar o PLUS.
+        if status_local == "authorized":
+            supabase_admin.table("empresas").update({
+                "plano_id": plano_plus_id,
+            }).eq("id", registro["empresa_id"]).execute()
+
+        # Não rebaixa por estados temporários (pending, paused ou rejected).
+        # Em cancelamento/expiração, só volta ao gratuito se não existir outra
+        # assinatura autorizada para a mesma empresa.
+        elif status_local in {"canceled", "expired"}:
+            resposta_outras = (
+                supabase_admin.table("assinaturas")
+                .select("id")
+                .eq("empresa_id", registro["empresa_id"])
+                .eq("status", "authorized")
+                .neq("id", registro["id"])
+                .limit(1)
+                .execute()
+            )
+            outras_ativas = resposta_outras.data or []
+            if not outras_ativas:
+                supabase_admin.table("empresas").update({
+                    "plano_id": plano_gratuito_id,
+                }).eq("id", registro["empresa_id"]).execute()
+
+    except HTTPException:
+        raise
     except Exception as erro:
         print("ERRO AO APLICAR STATUS DA ASSINATURA:", erro)
         raise HTTPException(status_code=500, detail="Não foi possível atualizar o plano da empresa.")
 
     return {"recebido": True, "status_assinatura": status_local}
-
