@@ -141,13 +141,39 @@ def requisicao_mercado_pago(metodo: str, caminho: str, payload: Optional[dict] =
             status_code=502,
             detail="O Mercado Pago não aceitou a solicitação. Confira o log do backend."
         )
-    except (urllib.error.URLError, TimeoutError) as erro:
-        print("ERRO DE CONEXÃO MERCADO PAGO:", str(erro))
+    
+    except urllib.error.HTTPError as erro:
+        detalhe = erro.read().decode("utf-8", errors="replace")
+        print("ERRO API MERCADO PAGO:", erro.code, detalhe[:1000])
+
+        if erro.code == 429:
+            raise HTTPException(
+                status_code=503,
+                detail="O Mercado Pago está limitando temporariamente as requisições. Tente novamente mais tarde."
+            )
+
+        if erro.code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="O recurso solicitado não foi encontrado no Mercado Pago."
+            )
+
+        if erro.code in (400, 422):
+            raise HTTPException(
+                status_code=400,
+                detail="O Mercado Pago rejeitou os dados enviados. Confira os dados da solicitação."
+            )
+
+        if erro.code in (401, 403):
+            raise HTTPException(
+                status_code=502,
+                detail="O Mercado Pago recusou a autenticação ou não autorizou a operação. Confira as credenciais e permissões."
+            )
+
         raise HTTPException(
             status_code=502,
-            detail="Não foi possível conectar ao Mercado Pago."
+            detail="O Mercado Pago não aceitou a solicitação. Confira o log do backend."
         )
-
 
 def validar_assinatura_webhook(x_signature: Optional[str], x_request_id: Optional[str], data_id: Optional[str]) -> bool:
     """Valida x-signature conforme o manifesto HMAC do Mercado Pago."""
