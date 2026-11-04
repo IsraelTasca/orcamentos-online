@@ -34,6 +34,11 @@ const links = [
     caminho: "/empresa",
     simbolo: "⌂",
   },
+  {
+    nome: "Meu plano",
+    caminho: "/plano",
+    simbolo: "♛",
+  },
 ];
 
 export default function AppShell({ children }: AppShellProps) {
