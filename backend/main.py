@@ -110,16 +110,21 @@ def requisicao_mercado_pago(metodo: str, caminho: str, payload: Optional[dict] =
 
     url = "https://api.mercadopago.com" + caminho
     body = None if payload is None else json.dumps(payload).encode("utf-8")
+
     headers = {
         "Authorization": f"Bearer {mercado_pago_access_token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+
     if metodo.upper() == "POST":
         headers["X-Idempotency-Key"] = secrets.token_urlsafe(24)
 
     request = urllib.request.Request(
-        url, data=body, headers=headers, method=metodo.upper()
+        url,
+        data=body,
+        headers=headers,
+        method=metodo.upper()
     )
 
     try:
@@ -129,7 +134,16 @@ def requisicao_mercado_pago(metodo: str, caminho: str, payload: Optional[dict] =
 
     except urllib.error.HTTPError as erro:
         detalhe = erro.read().decode("utf-8", errors="replace")
-        print("ERRO API MERCADO PAGO:", erro.code, detalhe[:1000])
+
+        # Registra o erro original para diagnóstico, sem expor credenciais.
+        print(
+            "ERRO API MERCADO PAGO:",
+            erro.code,
+            "CAMINHO:",
+            caminho,
+            "RESPOSTA:",
+            detalhe[:2000]
+        )
 
         if erro.code == 429:
             raise HTTPException(
@@ -146,7 +160,11 @@ def requisicao_mercado_pago(metodo: str, caminho: str, payload: Optional[dict] =
         if erro.code in (400, 422):
             raise HTTPException(
                 status_code=400,
-                detail="O Mercado Pago rejeitou os dados enviados. Confira os dados da solicitação."
+                detail={
+                    "mensagem": "O Mercado Pago rejeitou os dados enviados.",
+                    "codigo_mercado_pago": erro.code,
+                    "resposta": detalhe[:2000]
+                }
             )
 
         if erro.code in (401, 403):
@@ -162,6 +180,7 @@ def requisicao_mercado_pago(metodo: str, caminho: str, payload: Optional[dict] =
 
     except (urllib.error.URLError, TimeoutError) as erro:
         print("ERRO DE CONEXÃO MERCADO PAGO:", str(erro))
+
         raise HTTPException(
             status_code=502,
             detail="Não foi possível conectar ao Mercado Pago."
