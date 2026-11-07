@@ -187,9 +187,26 @@ def requisicao_mercado_pago(metodo: str, caminho: str, payload: Optional[dict] =
         )
 
 
-def validar_assinatura_webhook(x_signature: Optional[str], x_request_id: Optional[str], data_id: Optional[str]) -> bool:
-    """Valida x-signature conforme o manifesto HMAC do Mercado Pago."""
-    if not mercado_pago_webhook_secret or not x_signature or not x_request_id or not data_id:
+def validar_assinatura_webhook(
+    x_signature: Optional[str],
+    x_request_id: Optional[str],
+    data_id: Optional[str]
+) -> bool:
+    """Valida o HMAC do Mercado Pago e registra diagnóstico sem expor segredos."""
+    print("\n===== DIAGNÓSTICO WEBHOOK MERCADO PAGO =====")
+    print("SEGREDO CONFIGURADO:", bool(mercado_pago_webhook_secret))
+    print("X-SIGNATURE PRESENTE:", bool(x_signature))
+    print("X-REQUEST-ID PRESENTE:", bool(x_request_id))
+    print("DATA ID PRESENTE:", bool(data_id))
+
+    if not mercado_pago_webhook_secret:
+        print("RESULTADO: segredo do webhook ausente no processo.")
+        print("===== FIM DIAGNÓSTICO WEBHOOK =====\n")
+        return False
+
+    if not x_signature or not x_request_id or not data_id:
+        print("RESULTADO: cabeçalho obrigatório ou data.id ausente.")
+        print("===== FIM DIAGNÓSTICO WEBHOOK =====\n")
         return False
 
     partes = {}
@@ -200,17 +217,29 @@ def validar_assinatura_webhook(x_signature: Optional[str], x_request_id: Optiona
 
     timestamp = partes.get("ts")
     assinatura_recebida = partes.get("v1")
+    print("X-SIGNATURE POSSUI TS:", bool(timestamp))
+    print("X-SIGNATURE POSSUI V1:", bool(assinatura_recebida))
+
     if not timestamp or not assinatura_recebida:
+        print("RESULTADO: x-signature não contém ts e/ou v1.")
+        print("===== FIM DIAGNÓSTICO WEBHOOK =====\n")
         return False
 
-    # O ID da notificação é normalizado em minúsculas no manifesto.
-    manifesto = f"id:{str(data_id).lower()};request-id:{x_request_id};ts:{timestamp};"
+    manifesto = (
+        f"id:{str(data_id).lower()};"
+        f"request-id:{x_request_id};"
+        f"ts:{timestamp};"
+    )
     assinatura_esperada = hmac.new(
         mercado_pago_webhook_secret.encode("utf-8"),
         manifesto.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-    return hmac.compare_digest(assinatura_esperada, assinatura_recebida)
+
+    resultado = hmac.compare_digest(assinatura_esperada, assinatura_recebida)
+    print("RESULTADO HMAC:", "VALIDO" if resultado else "INVALIDO")
+    print("===== FIM DIAGNÓSTICO WEBHOOK =====\n")
+    return resultado
 
 
 # ============================================================
