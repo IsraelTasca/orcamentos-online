@@ -1,4 +1,3 @@
-
 'use client'
 
 import { useEffect, useState } from 'react'
@@ -129,15 +128,20 @@ export default function EmpresaPage() {
         'id, nome, responsavel, cpf_cnpj, whatsapp, email, endereco, logo_url'
       )
       .eq('usuario_id', user.id)
-      .single()
+      .maybeSingle()
 
-    if (empresaError || !empresaData) {
+    if (empresaError) {
       console.error(empresaError)
-
       setMensagem(
-        'Não foi possível encontrar a empresa cadastrada.'
+        `Erro ao consultar a empresa: ${empresaError.message}`
       )
+      setCarregando(false)
+      return
+    }
 
+    if (!empresaData) {
+      setEmpresa(null)
+      setMensagem('')
       setCarregando(false)
       return
     }
@@ -187,7 +191,7 @@ export default function EmpresaPage() {
   }
 
   async function salvarEmpresa() {
-    setMensagem('Salvando...')
+    setMensagem('')
     setSalvando(true)
 
     const {
@@ -201,54 +205,107 @@ export default function EmpresaPage() {
       return
     }
 
-    if (!empresa) {
-      setMensagem('Empresa não encontrada.')
-      setSalvando(false)
-      return
-    }
-
     if (!nome.trim()) {
       setMensagem('Informe o nome da empresa.')
       setSalvando(false)
       return
     }
 
-    // Atualiza os dados da empresa
-    const {
-      error: empresaError,
-    } = await supabase
-      .from('empresas')
-      .update({
-        nome: nome.trim(),
-        responsavel:
-          responsavel.trim() || null,
-        cpf_cnpj:
-          cpfCnpj.trim() || null,
-        whatsapp:
-          whatsapp.trim() || null,
-        email:
-          email.trim() || null,
-        endereco:
-          endereco.trim() || null,
-      })
-      .eq('id', empresa.id)
-
-    if (empresaError) {
-      console.error(empresaError)
-
-      setMensagem(
-        `Erro ao salvar empresa: ${empresaError.message}`
-      )
-
-      setSalvando(false)
-      return
+    const dadosEmpresa = {
+      nome: nome.trim(),
+      responsavel: responsavel.trim() || null,
+      cpf_cnpj: cpfCnpj.trim() || null,
+      whatsapp: whatsapp.trim() || null,
+      email: email.trim() || null,
+      endereco: endereco.trim() || null,
     }
 
-    // Se foi escolhida uma nova logo
+    let empresaSalva: Empresa
+
+    if (empresa) {
+      // Atualiza somente a empresa pertencente ao usuário autenticado.
+      const { error: empresaError } = await supabase
+        .from('empresas')
+        .update(dadosEmpresa)
+        .eq('id', empresa.id)
+        .eq('usuario_id', user.id)
+
+      if (empresaError) {
+        console.error(empresaError)
+        setMensagem(
+          `Erro ao atualizar empresa: ${empresaError.message}`
+        )
+        setSalvando(false)
+        return
+      }
+
+      empresaSalva = {
+        ...empresa,
+        ...dadosEmpresa,
+      }
+    } else {
+      // Busca o plano gratuito ativo para vincular a nova empresa.
+      const {
+        data: planoGratuito,
+        error: planoError,
+      } = await supabase
+        .from('planos')
+        .select('id')
+        .eq('nome', 'Free')
+        .eq('ativo', true)
+        .maybeSingle()
+
+      if (planoError) {
+        console.error(planoError)
+        setMensagem(
+          `Erro ao consultar o plano gratuito: ${planoError.message}`
+        )
+        setSalvando(false)
+        return
+      }
+
+      if (!planoGratuito) {
+        setMensagem(
+          'Não foi encontrado um plano gratuito ativo. Entre em contato com o suporte.'
+        )
+        setSalvando(false)
+        return
+      }
+
+      // Cria a empresa real vinculada ao usuário autenticado.
+      const {
+        data: novaEmpresa,
+        error: criarEmpresaError,
+      } = await supabase
+        .from('empresas')
+        .insert({
+          usuario_id: user.id,
+          plano_id: planoGratuito.id,
+          ...dadosEmpresa,
+        })
+        .select(
+          'id, nome, responsavel, cpf_cnpj, whatsapp, email, endereco, logo_url'
+        )
+        .single()
+
+      if (criarEmpresaError || !novaEmpresa) {
+        console.error(criarEmpresaError)
+        setMensagem(
+          `Erro ao cadastrar empresa: ${
+            criarEmpresaError?.message ?? 'Não foi possível confirmar o cadastro.'
+          }`
+        )
+        setSalvando(false)
+        return
+      }
+
+      empresaSalva = novaEmpresa
+      setEmpresa(novaEmpresa)
+    }
+
+    // Se foi escolhida uma nova logo, envia após salvar/criar a empresa.
     if (logo) {
-      setMensagem(
-        'Dados salvos. Enviando logo...'
-      )
+      setMensagem('Dados salvos. Enviando logo...')
 
       const extensao =
         logo.name
@@ -256,63 +313,44 @@ export default function EmpresaPage() {
           .pop()
           ?.toLowerCase() || 'png'
 
-      const caminhoArquivo =
-        `${user.id}/logo.${extensao}`
+      const caminhoArquivo = `${user.id}/logo.${extensao}`
 
-      const {
-        error: uploadError,
-      } = await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('logos')
-        .upload(
-          caminhoArquivo,
-          logo,
-          {
-            upsert: true,
-            contentType: logo.type,
-          }
-        )
+        .upload(caminhoArquivo, logo, {
+          upsert: true,
+          contentType: logo.type,
+        })
 
       if (uploadError) {
         console.error(uploadError)
-
         setMensagem(
           `Dados salvos, mas não foi possível enviar a logo: ${uploadError.message}`
         )
-
         setSalvando(false)
+        await carregarEmpresa()
         return
       }
 
-      const {
-        data: urlData,
-      } = supabase.storage
+      const { data: urlData } = supabase.storage
         .from('logos')
-        .getPublicUrl(
-          caminhoArquivo
-        )
+        .getPublicUrl(caminhoArquivo)
 
-      const logoUrl =
-        urlData.publicUrl
+      const logoUrl = urlData.publicUrl
 
-      const {
-        error: logoUpdateError,
-      } = await supabase
+      const { error: logoUpdateError } = await supabase
         .from('empresas')
-        .update({
-          logo_url: logoUrl,
-        })
-        .eq('id', empresa.id)
+        .update({ logo_url: logoUrl })
+        .eq('id', empresaSalva.id)
+        .eq('usuario_id', user.id)
 
       if (logoUpdateError) {
-        console.error(
-          logoUpdateError
-        )
-
+        console.error(logoUpdateError)
         setMensagem(
           `Dados salvos, mas não foi possível salvar a URL da logo: ${logoUpdateError.message}`
         )
-
         setSalvando(false)
+        await carregarEmpresa()
         return
       }
 
@@ -321,9 +359,8 @@ export default function EmpresaPage() {
     }
 
     setMensagem(
-      'Empresa atualizada com sucesso!'
+      empresa ? 'Empresa atualizada com sucesso!' : 'Empresa cadastrada com sucesso!'
     )
-
     setSalvando(false)
 
     await carregarEmpresa()
@@ -882,7 +919,9 @@ export default function EmpresaPage() {
           >
             {salvando
               ? 'Salvando...'
-              : '✓ Salvar alterações'}
+              : empresa
+                ? '✓ Salvar alterações'
+                : '✓ Cadastrar empresa'}
           </button>
         </section>
       </div>

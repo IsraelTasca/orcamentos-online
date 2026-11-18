@@ -1,8 +1,8 @@
-
 'use client'
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { supabase } from '../../../../lib/supabase'
 
 type Cliente = {
@@ -28,6 +28,7 @@ export default function HistoricoOrcamentosPage() {
 
   const [orcamentos, setOrcamentos] = useState<OrcamentoComCliente[]>([])
   const [carregando, setCarregando] = useState(true)
+  const [semEmpresa, setSemEmpresa] = useState(false)
   const [mensagem, setMensagem] = useState('')
   const [busca, setBusca] = useState('')
   const [filtroStatus, setFiltroStatus] = useState('todos')
@@ -59,11 +60,17 @@ export default function HistoricoOrcamentosPage() {
         .from('empresas')
         .select('id')
         .eq('usuario_id', user.id)
-        .single()
+        .maybeSingle()
 
-      if (empresaError || !empresa) {
+      if (empresaError) {
         console.error(empresaError)
-        setMensagem('Não foi possível encontrar a empresa cadastrada.')
+        setMensagem(`Erro ao consultar a empresa: ${empresaError.message}`)
+        setCarregando(false)
+        return
+      }
+
+      if (!empresa) {
+        setSemEmpresa(true)
         setCarregando(false)
         return
       }
@@ -310,6 +317,84 @@ export default function HistoricoOrcamentosPage() {
               }
             `}</style>
           </div>
+        </div>
+      </main>
+    )
+  }
+
+  if (semEmpresa) {
+    return (
+      <main style={estilos.pagina}>
+        <div style={estilos.conteudo}>
+          <section
+            style={{
+              ...estilos.cartao,
+              maxWidth: '720px',
+              margin: '48px auto',
+              padding: '42px 28px',
+              textAlign: 'center',
+            }}
+          >
+            <div
+              style={{
+                width: '56px',
+                height: '56px',
+                display: 'grid',
+                placeItems: 'center',
+                margin: '0 auto 18px',
+                borderRadius: '16px',
+                background: '#eff6ff',
+                color: '#2563eb',
+                fontSize: '26px',
+                fontWeight: 800,
+              }}
+            >
+              !
+            </div>
+
+            <h1
+              style={{
+                margin: 0,
+                color: '#172033',
+                fontSize: '24px',
+                fontWeight: 800,
+              }}
+            >
+              Cadastre sua empresa para começar
+            </h1>
+
+            <p
+              style={{
+                margin: '12px auto 24px',
+                maxWidth: '520px',
+                color: '#64748b',
+                fontSize: '14px',
+                lineHeight: 1.7,
+              }}
+            >
+              Sua conta está ativa! Para consultar o histórico de orçamentos,
+              primeiro precisamos dos dados da sua empresa.
+            </p>
+
+            <Link
+              href="/empresa"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                borderRadius: '10px',
+                background: '#2563eb',
+                color: '#ffffff',
+                padding: '13px 22px',
+                fontSize: '14px',
+                fontWeight: 700,
+                textDecoration: 'none',
+              }}
+            >
+              Cadastrar minha empresa →
+            </Link>
+          </section>
         </div>
       </main>
     )

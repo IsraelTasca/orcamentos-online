@@ -36,7 +36,7 @@ export default function Login() {
         return
       }
 
-      setMensagem('Login realizado! Verificando sua empresa...')
+      setMensagem('Login realizado! Verificando acesso...')
 
       const {
         data: { user },
@@ -49,27 +49,8 @@ export default function Login() {
         return
       }
 
-      const { data: empresa, error: erroEmpresa } = await supabase
-        .from('empresas')
-        .select('id, nome')
-        .eq('usuario_id', user.id)
-        .maybeSingle()
-
-      if (erroEmpresa) {
-        setMensagem(
-          'Login realizado, mas houve um erro ao consultar sua empresa: ' +
-            erroEmpresa.message
-        )
-        return
-      }
-
-      if (!empresa) {
-        setMensagem(
-          'Login realizado, mas não encontramos uma empresa vinculada a esta conta.'
-        )
-        return
-      }
-
+      // O acesso ao painel não depende mais de uma empresa cadastrada.
+      // As páginas que precisam de empresa orientarão o usuário a cadastrá-la.
       router.replace('/orcamentos')
     } catch {
       setMensagem('Ocorreu um erro inesperado ao tentar entrar.')

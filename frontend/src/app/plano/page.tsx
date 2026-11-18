@@ -1,7 +1,7 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { supabase } from "../../../lib/supabase";
 
 const API_URL =
@@ -21,6 +21,7 @@ type Assinatura = {
 export default function PlanoPage() {
   const [assinatura, setAssinatura] = useState<Assinatura | null>(null);
   const [carregando, setCarregando] = useState(true);
+  const [semEmpresa, setSemEmpresa] = useState(false);
   const [contratando, setContratando] = useState(false);
   const [mensagem, setMensagem] = useState("");
 
@@ -47,6 +48,38 @@ export default function PlanoPage() {
 
     try {
       const token = await obterToken();
+
+      // Antes de consultar o backend de assinaturas, verifica se o usuário
+      // já possui uma empresa. A assinatura é vinculada à empresa.
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError || !user) {
+        throw new Error("Não foi possível identificar o usuário autenticado.");
+      }
+
+      const {
+        data: empresa,
+        error: empresaError,
+      } = await supabase
+        .from("empresas")
+        .select("id")
+        .eq("usuario_id", user.id)
+        .maybeSingle();
+
+      if (empresaError) {
+        throw new Error(
+          `Não foi possível consultar sua empresa: ${empresaError.message}`
+        );
+      }
+
+      if (!empresa) {
+        setSemEmpresa(true);
+        setAssinatura(null);
+        return;
+      }
 
       const resposta = await fetch(`${API_URL}/assinaturas/minha`, {
         method: "GET",
@@ -190,6 +223,82 @@ export default function PlanoPage() {
           <p style={estilos.descricao}>
             Estamos consultando sua assinatura.
           </p>
+        </section>
+      </main>
+    );
+  }
+
+  if (semEmpresa) {
+    return (
+      <main style={estilos.pagina}>
+        <section
+          style={{
+            ...estilos.cartao,
+            maxWidth: "720px",
+            margin: "48px auto",
+            padding: "42px 28px",
+            textAlign: "center",
+          }}
+        >
+          <div
+            style={{
+              width: "56px",
+              height: "56px",
+              display: "grid",
+              placeItems: "center",
+              margin: "0 auto 18px",
+              borderRadius: "16px",
+              background: "#eff6ff",
+              color: "#2563eb",
+              fontSize: "26px",
+              fontWeight: 800,
+            }}
+          >
+            !
+          </div>
+
+          <h1
+            style={{
+              margin: 0,
+              color: "#172033",
+              fontSize: "24px",
+              fontWeight: 800,
+            }}
+          >
+            Cadastre sua empresa para começar
+          </h1>
+
+          <p
+            style={{
+              margin: "12px auto 24px",
+              maxWidth: "520px",
+              color: "#64748b",
+              fontSize: "14px",
+              lineHeight: 1.7,
+            }}
+          >
+            Sua conta está ativa! Para consultar seu plano e gerenciar uma
+            assinatura, primeiro precisamos dos dados da sua empresa.
+          </p>
+
+          <Link
+            href="/empresa"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "8px",
+              borderRadius: "10px",
+              background: "#2563eb",
+              color: "#ffffff",
+              padding: "13px 22px",
+              fontSize: "14px",
+              fontWeight: 700,
+              textDecoration: "none",
+            }}
+          >
+            Cadastrar minha empresa →
+          </Link>
         </section>
       </main>
     );

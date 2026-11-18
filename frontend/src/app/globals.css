@@ -1214,3 +1214,40 @@ img {
     margin-top: 25px;
   }
 }
+
+/* =========================================
+   TELA DE CADASTRO — ORÇAMENTOS ONLINE
+   Reutiliza a identidade visual da tela de login.
+   ========================================= */
+
+.cadastro-form {
+  gap: 15px;
+}
+
+.cadastro-form .login-field {
+  gap: 7px;
+}
+
+.cadastro-message-success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.cadastro-message-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.cadastro-message-info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+@media (max-width: 480px) {
+  .cadastro-form {
+    gap: 16px;
+  }
+}

@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { supabase } from '../../../lib/supabase'
 
 const API_URL =
@@ -120,6 +121,7 @@ export default function OrcamentosPage() {
   >([])
 
   const [carregando, setCarregando] = useState(true)
+  const [semEmpresa, setSemEmpresa] = useState(false)
   const [salvando, setSalvando] = useState(false)
   const [mensagem, setMensagem] = useState('')
 
@@ -149,15 +151,19 @@ export default function OrcamentosPage() {
       .from('empresas')
       .select('id')
       .eq('usuario_id', user.id)
-      .single()
+      .maybeSingle()
 
-    if (empresaError || !empresa) {
+    if (empresaError) {
       console.error(empresaError)
-
       setMensagem(
-        'Não foi possível encontrar a empresa cadastrada.'
+        `Erro ao consultar a empresa: ${empresaError.message}`
       )
+      setCarregando(false)
+      return
+    }
 
+    if (!empresa) {
+      setSemEmpresa(true)
       setCarregando(false)
       return
     }
@@ -419,7 +425,8 @@ export default function OrcamentosPage() {
       currency: 'BRL',
     })
   }
-    async function salvarOrcamento() {
+
+  async function salvarOrcamento() {
     setMensagem('')
 
     if (!clienteId) {
@@ -567,6 +574,83 @@ export default function OrcamentosPage() {
             Carregando clientes e itens cadastrados...
           </p>
         </div>
+      </main>
+    )
+  }
+
+  if (semEmpresa) {
+    return (
+      <main style={estilos.pagina}>
+        <section
+          style={{
+            ...estilos.cartao,
+            maxWidth: '720px',
+            margin: '48px auto',
+            textAlign: 'center',
+            padding: '40px 28px',
+          }}
+        >
+          <div
+            style={{
+              width: '56px',
+              height: '56px',
+              display: 'grid',
+              placeItems: 'center',
+              margin: '0 auto 18px',
+              borderRadius: '16px',
+              background: '#eff6ff',
+              color: '#2563eb',
+              fontSize: '26px',
+              fontWeight: 800,
+            }}
+          >
+            !
+          </div>
+
+          <h1
+            style={{
+              margin: 0,
+              color: '#172033',
+              fontSize: '24px',
+              fontWeight: 800,
+            }}
+          >
+            Cadastre sua empresa para começar
+          </h1>
+
+          <p
+            style={{
+              margin: '12px auto 24px',
+              maxWidth: '520px',
+              color: '#64748b',
+              fontSize: '14px',
+              lineHeight: 1.7,
+            }}
+          >
+            Sua conta foi criada com sucesso! Para cadastrar clientes,
+            produtos e criar orçamentos, primeiro precisamos dos dados da
+            sua empresa.
+          </p>
+
+          <Link
+            href="/empresa"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              borderRadius: '10px',
+              background: '#2563eb',
+              color: '#ffffff',
+              padding: '13px 22px',
+              fontSize: '14px',
+              fontWeight: 700,
+              textDecoration: 'none',
+            }}
+          >
+            Cadastrar minha empresa →
+          </Link>
+        </section>
       </main>
     )
   }
@@ -851,7 +935,8 @@ export default function OrcamentosPage() {
             </div>
           )}
         </section>
-                {/* ADICIONAR ITEM */}
+
+        {/* ADICIONAR ITEM */}
         <section style={estilos.cartao}>
           <div
             style={{
@@ -1311,7 +1396,8 @@ export default function OrcamentosPage() {
             </div>
           </div>
         </section>
-                {/* VALIDADE E OBSERVAÇÕES */}
+
+        {/* VALIDADE E OBSERVAÇÕES */}
         <section style={estilos.cartao}>
           <div
             style={{
