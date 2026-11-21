@@ -6,7 +6,7 @@ import hashlib
 import urllib.error
 import urllib.request
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from fastapi import (
@@ -53,6 +53,9 @@ plano_gratuito_id = os.getenv(
 )
 plano_plus_id = os.getenv(
     "PLANO_PLUS_ID", "be2bd336-6ec1-4501-9180-cd6c8828ab81"
+)
+plano_pro_id = os.getenv(
+    "PLANO_PRO_ID", "8f3d6b21-7c94-4e5a-9b12-6d8f0a3c5e71"
 )
 
 
@@ -1305,11 +1308,39 @@ def atualizar_orcamento(
     }
 
 # ============================================================
-# ASSINATURA PLUS - MERCADO PAGO
+# ASSINATURAS PLUS E PRO - MERCADO PAGO
 # ============================================================
 
-@app.post("/assinaturas/plus")
-def criar_assinatura_plus(
+def expirar_assinaturas_pendentes_empresa(empresa_id: str):
+    """Marca como abandoned pendências da empresa com mais de 60 minutos.
+
+    A expiração é interna; não cancela a preapproval no Mercado Pago.
+    Usa created_at para que updated_at não reinicie o prazo.
+    """
+    limite = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+    agora = datetime.now(timezone.utc).isoformat()
+    try:
+        resultado = (
+            supabase_admin.table("assinaturas")
+            .update({"status": "abandoned", "updated_at": agora})
+            .eq("empresa_id", empresa_id)
+            .eq("status", "pending")
+            .lt("created_at", limite)
+            .execute()
+        )
+        return resultado
+    except Exception as erro:
+        print("ERRO AO EXPIRAR ASSINATURAS PENDENTES:", erro)
+        raise HTTPException(
+            status_code=500,
+            detail="Não foi possível verificar o prazo da contratação pendente.",
+        )
+
+
+
+@app.post("/assinaturas/{plano_codigo}")
+def criar_assinatura_plano(
+    plano_codigo: str,
     autenticacao=Depends(obter_cliente_supabase_autenticado)
 ):
     """Cria uma assinatura mensal pendente e devolve o link de autorização."""
@@ -1323,11 +1354,46 @@ def criar_assinatura_plus(
     empresa = obter_empresa_usuario(supabase_usuario, usuario["id"])
     empresa_id = empresa["id"]
 
+    configuracao_planos = {
+        "plus": {"id": plano_plus_id, "nome": "Plus", "prefixo": "orcplus_"},
+        "pro": {"id": plano_pro_id, "nome": "Pro", "prefixo": "orcpro_"},
+    }
+    configuracao = configuracao_planos.get(plano_codigo.lower())
+    if not configuracao:
+        raise HTTPException(status_code=404, detail="Plano solicitado não encontrado.")
+
+    plano_id_solicitado = configuracao["id"]
+    try:
+        resposta_plano = (
+            supabase_admin.table("planos")
+            .select("id, nome, preco, ativo")
+            .eq("id", plano_id_solicitado)
+            .eq("ativo", True)
+            .limit(1)
+            .execute()
+        )
+        planos_encontrados = resposta_plano.data or []
+    except Exception as erro:
+        print("ERRO AO CONSULTAR PLANO PARA ASSINATURA:", erro)
+        raise HTTPException(status_code=500, detail="Não foi possível consultar o plano escolhido.")
+
+    if not planos_encontrados:
+        raise HTTPException(status_code=404, detail="Plano indisponível para contratação.")
+
+    plano = planos_encontrados[0]
+    valor_mensal = round(float(plano["preco"]), 2)
+    if valor_mensal <= 0:
+        raise HTTPException(status_code=400, detail="O plano gratuito não exige assinatura.")
+
+    # Expira internamente pendências com mais de 60 minutos antes de verificar bloqueios.
+    expirar_assinaturas_pendentes_empresa(empresa_id)
+
+
     # Evita criar várias assinaturas pendentes/autorizadas para a mesma empresa.
     try:
         existentes = (
             supabase_admin.table("assinaturas")
-            .select("id, status, referencia_externa, url_autorizacao, mercadopago_assinatura_id")
+            .select("id, plano_id, status, referencia_externa, url_autorizacao, mercadopago_assinatura_id")
             .eq("empresa_id", empresa_id)
             .in_("status", ["pending", "authorized", "paused"])
             .order("created_at", desc=True)
@@ -1341,6 +1407,17 @@ def criar_assinatura_plus(
     if existentes:
         assinatura_existente = existentes[0]
         status_existente = assinatura_existente.get("status")
+
+        # Não reutiliza nem oferece link de uma contratação de outro plano.
+        if assinatura_existente.get("plano_id") != plano_id_solicitado:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Sua empresa já possui uma contratação pendente, pausada ou ativa "
+                    "de outro plano. Resolva a assinatura existente antes de escolher "
+                    "outro plano. Nenhuma nova cobrança foi criada."
+                ),
+            )
 
         # Regra definida para o produto: uma assinatura pausada bloqueia
         # uma nova contratação até que a situação seja resolvida no Mercado Pago.
@@ -1357,7 +1434,7 @@ def criar_assinatura_plus(
 
         if status_existente == "authorized":
             return {
-                "mensagem": "A empresa já possui uma assinatura Plus autorizada.",
+                "mensagem": f"A empresa já possui uma assinatura {configuracao['nome']} autorizada.",
                 "status": "authorized",
                 "url_autorizacao": assinatura_existente.get("url_autorizacao"),
             }
@@ -1462,15 +1539,15 @@ def criar_assinatura_plus(
                 "public_key": mercado_pago_public_key,
             }
 
-    referencia = "orcplus_" + secrets.token_urlsafe(24)
+    referencia = configuracao["prefixo"] + secrets.token_urlsafe(24)
     registro = {
         "empresa_id": empresa_id,
-        "plano_id": plano_plus_id,
+        "plano_id": plano_id_solicitado,
         "provedor": "mercado_pago",
         "status": "pending",
         "referencia_externa": referencia,
         "email_pagador": usuario.get("email"),
-        "valor_mensal": 19.90,
+        "valor_mensal": valor_mensal,
         "moeda": "BRL",
     }
 
@@ -1481,13 +1558,13 @@ def criar_assinatura_plus(
         raise HTTPException(status_code=500, detail="Não foi possível iniciar a assinatura.")
 
     payload = {
-        "reason": "Orçamentos Online Plus - assinatura mensal",
+        "reason": f"Orçamentos Online {plano['nome']} - assinatura mensal",
         "external_reference": referencia,
         "payer_email": usuario.get("email"),
         "auto_recurring": {
             "frequency": 1,
             "frequency_type": "months",
-            "transaction_amount": 19.90,
+            "transaction_amount": valor_mensal,
             "currency_id": "BRL",
         },
         "back_url": f"{app_frontend_url}/assinatura/retorno",
@@ -1498,12 +1575,11 @@ def criar_assinatura_plus(
     try:
         resposta_mp = requisicao_mercado_pago("POST", "/preapproval", payload)
     except HTTPException:
-        # O registro pendente fica guardado para auditoria; não libera o Plus.
+        # O registro pendente fica guardado para auditoria; não libera o plano.
         raise
 
     mp_id = resposta_mp.get("id")
     url_autorizacao = resposta_mp.get("init_point") or resposta_mp.get("sandbox_init_point")
-    status_mp = resposta_mp.get("status", "pending")
 
     if not mp_id or not url_autorizacao:
         print("RESPOSTA INCOMPLETA DO MERCADO PAGO:", resposta_mp)
@@ -1538,6 +1614,7 @@ def obter_minha_assinatura(
     """Consulta a assinatura da empresa atual usando a sessão/RLS do usuário."""
     supabase_usuario, usuario = autenticacao
     empresa = obter_empresa_usuario(supabase_usuario, usuario["id"])
+    expirar_assinaturas_pendentes_empresa(empresa["id"])
     try:
         resposta = (
             supabase_usuario.table("assinaturas")
@@ -1550,7 +1627,25 @@ def obter_minha_assinatura(
     except Exception as erro:
         print("ERRO AO CONSULTAR MINHA ASSINATURA:", erro)
         raise HTTPException(status_code=500, detail="Não foi possível consultar a assinatura.")
-    return {"assinatura": (resposta.data or [None])[0]}
+    assinatura = (resposta.data or [None])[0]
+    try:
+        resposta_plano = (
+            supabase_usuario.table("planos")
+            .select("id, nome, preco, limite_orcamentos")
+            .eq("id", empresa["plano_id"])
+            .eq("ativo", True)
+            .limit(1)
+            .execute()
+        )
+        plano_atual = (resposta_plano.data or [None])[0]
+    except Exception as erro:
+        print("ERRO AO CONSULTAR PLANO ATUAL:", erro)
+        raise HTTPException(
+            status_code=500,
+            detail="Não foi possível consultar o plano atual da empresa.",
+        )
+
+    return {"assinatura": assinatura, "plano_atual": plano_atual}
 
 
 @app.post("/webhooks/mercado-pago")
@@ -1566,7 +1661,7 @@ def webhook_mercado_pago(
     if not mercado_pago_access_token:
         raise HTTPException(status_code=503, detail="MERCADO_PAGO_ACCESS_TOKEN não está configurado.")
     if not mercado_pago_webhook_secret:
-        raise HTTPException(status_code=503, detail="MERCADO_PAGO_WEBHOOK_SECRET não está configurada.")
+        raise HTTPException(status_code=503, detail="MERCADO_PAGO_WEBHOOK_SECRET não está configurado.")
 
     dados = payload.get("data") or {}
     data_id = request.query_params.get("data.id")
@@ -1652,9 +1747,8 @@ def webhook_mercado_pago(
     try:
         resposta_local = (
             supabase_admin.table("assinaturas")
-            .select("id, empresa_id, plano_id")
+            .select("id, empresa_id, plano_id, status, mercadopago_assinatura_id, created_at")
             .eq("referencia_externa", referencia)
-            .eq("mercadopago_assinatura_id", mp_id)
             .limit(1)
             .execute()
         )
@@ -1669,11 +1763,38 @@ def webhook_mercado_pago(
         return {"recebido": True, "ignorado": True, "motivo": "Assinatura não encontrada no banco."}
 
     registro = registros[0]
+    mp_id_local = registro.get("mercadopago_assinatura_id")
+    if mp_id_local and str(mp_id_local) != str(mp_id):
+        print("WEBHOOK: ID MP DIFERENTE DO REGISTRO LOCAL:", mp_id_local, mp_id)
+        return {"recebido": True, "ignorado": True, "motivo": "ID da assinatura não corresponde ao registro local."}
+
+    # Checkout expirado internamente é estado terminal para o webhook.
+    # Mantemos abandoned no banco para impedir que notificações repetidas
+    # de uma autorização tardia transformem a tentativa em assinatura ativa.
+    if registro.get("status") == "abandoned":
+        print(
+            "WEBHOOK IGNORADO: ASSINATURA ABANDONADA INTERNAMENTE; "
+            "PLANO NÃO SERÁ ATIVADO:",
+            registro["id"],
+            mp_id,
+            status_local,
+        )
+        return {
+            "recebido": True,
+            "ignorado": True,
+            "status_mercado_pago": status_local,
+            "status_local_preservado": "abandoned",
+            "plano_ativado": False,
+            "motivo": "Checkout expirado internamente; webhook não altera assinatura abandonada.",
+        }
+
+    estava_abandonada = registro.get("status") == "abandoned"
     try:
         # Atualiza o status local sem apagar inicio_em em notificações que não
         # representam uma nova autorização.
         atualizacao_assinatura = {
             "status": status_local,
+            "mercadopago_assinatura_id": str(mp_id),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if status_local == "authorized":
@@ -1683,10 +1804,50 @@ def webhook_mercado_pago(
             atualizacao_assinatura
         ).eq("id", registro["id"]).execute()
 
-        # Uma assinatura autorizada pode ativar o PLUS.
+        # Ativa exatamente o plano vinculado à assinatura autorizada.
         if status_local == "authorized":
+            # Se a autorização chegou depois da expiração interna, registra a autorização
+            # remota, mas evita trocar o plano se outra assinatura já estiver autorizada.
+            if estava_abandonada:
+                outras_autorizadas_tardias = (
+                    supabase_admin.table("assinaturas")
+                    .select("id, plano_id")
+                    .eq("empresa_id", registro["empresa_id"])
+                    .eq("status", "authorized")
+                    .neq("id", registro["id"])
+                    .limit(1)
+                    .execute()
+                ).data or []
+                if outras_autorizadas_tardias:
+                    print(
+                        "ALERTA: AUTORIZAÇÃO TARDIA DE ASSINATURA ABANDONADA; "
+                        "OUTRA ASSINATURA JÁ AUTORIZADA. PLANO NÃO ALTERADO:",
+                        registro["id"],
+                    )
+                    return {
+                        "recebido": True,
+                        "status": "authorized",
+                        "plano_ativado": False,
+                        "alerta": "Autorização tardia registrada; existe outra assinatura autorizada. Verificação manual necessária.",
+                    }
+
+            plano_validado = (
+                supabase_admin.table("planos")
+                .select("id")
+                .eq("id", registro["plano_id"])
+                .eq("ativo", True)
+                .limit(1)
+                .execute()
+            ).data or []
+
+            if not plano_validado:
+                raise HTTPException(
+                    status_code=500,
+                    detail="O plano vinculado à assinatura não existe ou está inativo.",
+                )
+
             supabase_admin.table("empresas").update({
-                "plano_id": plano_plus_id,
+                "plano_id": registro["plano_id"],
             }).eq("id", registro["empresa_id"]).execute()
 
         # Não rebaixa por estados temporários (pending, paused ou rejected).
@@ -1695,7 +1856,7 @@ def webhook_mercado_pago(
         elif status_local in {"canceled", "expired"}:
             resposta_outras = (
                 supabase_admin.table("assinaturas")
-                .select("id")
+                .select("id, plano_id")
                 .eq("empresa_id", registro["empresa_id"])
                 .eq("status", "authorized")
                 .neq("id", registro["id"])
@@ -1703,10 +1864,14 @@ def webhook_mercado_pago(
                 .execute()
             )
             outras_ativas = resposta_outras.data or []
-            if not outras_ativas:
-                supabase_admin.table("empresas").update({
-                    "plano_id": plano_gratuito_id,
-                }).eq("id", registro["empresa_id"]).execute()
+            plano_destino = (
+                outras_ativas[0]["plano_id"]
+                if outras_ativas
+                else plano_gratuito_id
+            )
+            supabase_admin.table("empresas").update({
+                "plano_id": plano_destino,
+            }).eq("id", registro["empresa_id"]).execute()
 
     except HTTPException:
         raise

@@ -7,6 +7,17 @@ import { supabase } from "../../../lib/supabase";
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
+// IDs dos planos cadastrados no Supabase
+const PLANO_PLUS_ID = "be2bd336-6ec1-4501-9180-cd6c8828ab81";
+const PLANO_PRO_ID = "8f3d6b21-7c94-4e5a-9b12-6d8f0a3c5e71";
+
+type PlanoAtual = {
+  id: string;
+  nome: string;
+  preco: number;
+  limite_orcamentos: number | null;
+};
+
 type Assinatura = {
   id: string;
   plano_id: string;
@@ -20,14 +31,42 @@ type Assinatura = {
 
 export default function PlanoPage() {
   const [assinatura, setAssinatura] = useState<Assinatura | null>(null);
+  const [planoAtual, setPlanoAtual] = useState<PlanoAtual | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [semEmpresa, setSemEmpresa] = useState(false);
-  const [contratando, setContratando] = useState(false);
+  const [contratando, setContratando] = useState<"plus" | "pro" | null>(null);
   const [mensagem, setMensagem] = useState("");
+  const [tempoRestante, setTempoRestante] = useState<number | null>(null);
 
   useEffect(() => {
     carregarAssinatura();
   }, []);
+
+  useEffect(() => {
+    if (assinatura?.status !== "pending" || !assinatura.created_at) {
+      setTempoRestante(null);
+      return;
+    }
+
+    const expiraEm = new Date(assinatura.created_at).getTime() + 60 * 60 * 1000;
+    const atualizarContador = () => {
+      const segundos = Math.max(0, Math.ceil((expiraEm - Date.now()) / 1000));
+      setTempoRestante(segundos);
+    };
+
+    atualizarContador();
+    const intervalo = window.setInterval(atualizarContador, 1000);
+    return () => window.clearInterval(intervalo);
+  }, [assinatura?.status, assinatura?.created_at]);
+
+  function formatarTempo(segundos: number) {
+    const horas = Math.floor(segundos / 3600);
+    const minutos = Math.floor((segundos % 3600) / 60);
+    const segundosRestantes = segundos % 60;
+    return [horas, minutos, segundosRestantes]
+      .map((parte) => String(parte).padStart(2, "0"))
+      .join(":");
+  }
 
   async function obterToken() {
     const {
@@ -98,6 +137,7 @@ export default function PlanoPage() {
       }
 
       setAssinatura(dados.assinatura ?? null);
+      setPlanoAtual(dados.plano_atual ?? null);
     } catch (erro) {
       setMensagem(
         erro instanceof Error
@@ -109,16 +149,16 @@ export default function PlanoPage() {
     }
   }
 
-  async function contratarPlus() {
-    if (contratando) return;
+  async function contratarPlano(planoCodigo: "plus" | "pro") {
+    if (contratando !== null || planoAtivo || aguardando) return;
 
-    setContratando(true);
+    setContratando(planoCodigo);
     setMensagem("");
 
     try {
       const token = await obterToken();
 
-      const resposta = await fetch(`${API_URL}/assinaturas/plus`, {
+      const resposta = await fetch(`${API_URL}/assinaturas/${planoCodigo}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -141,7 +181,7 @@ export default function PlanoPage() {
 
       if (dados.status === "authorized") {
         await carregarAssinatura();
-        setMensagem("Sua assinatura PLUS já está autorizada.");
+        setMensagem(`Sua assinatura ${planoCodigo.toUpperCase()} já está autorizada.`);
         return;
       }
 
@@ -155,7 +195,7 @@ export default function PlanoPage() {
           : "Não foi possível conectar ao servidor."
       );
     } finally {
-      setContratando(false);
+      setContratando(null);
     }
   }
 
@@ -167,6 +207,7 @@ export default function PlanoPage() {
       canceled: "Cancelada",
       rejected: "Rejeitada",
       expired: "Expirada",
+      abandoned: "Checkout expirado",
     };
 
     return nomes[status] || status;
@@ -174,6 +215,11 @@ export default function PlanoPage() {
 
   const planoAtivo = assinatura?.status === "authorized";
   const aguardando = assinatura?.status === "pending";
+  const pendentePlus = aguardando && assinatura?.plano_id === PLANO_PLUS_ID;
+  const pendentePro = aguardando && assinatura?.plano_id === PLANO_PRO_ID;
+  const nomePlanoAtual = planoAtivo
+    ? planoAtual?.nome?.toUpperCase() || "PLANO PAGO"
+    : "GRATUITO";
 
   const estilos = {
     pagina: {
@@ -309,7 +355,7 @@ export default function PlanoPage() {
       <style>{`
         .plano-grade {
           display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 22px;
           align-items: stretch;
         }
@@ -402,7 +448,7 @@ export default function PlanoPage() {
 
             <p style={estilos.descricao}>
               {planoAtivo
-                ? "Sua empresa possui uma assinatura PLUS autorizada."
+                ? `Sua empresa possui uma assinatura ${planoAtual?.nome || "paga"} autorizada.`
                 : aguardando
                 ? "Sua contratação está aguardando autorização no Mercado Pago."
                 : "Sua empresa está utilizando o plano gratuito."}
@@ -419,9 +465,46 @@ export default function PlanoPage() {
               fontWeight: 800,
             }}
           >
-            {planoAtivo ? "PLUS" : "GRATUITO"}
+            {nomePlanoAtual}
           </span>
         </div>
+
+        {aguardando && tempoRestante !== null && (
+          <div
+            role="status"
+            style={{
+              marginTop: "20px",
+              padding: "18px",
+              border: `1px solid ${tempoRestante > 0 ? "#fed7aa" : "#fecaca"}`,
+              borderRadius: "12px",
+              background: tempoRestante > 0 ? "#fff7ed" : "#fef2f2",
+              color: tempoRestante > 0 ? "#9a3412" : "#991b1b",
+            }}
+          >
+            <div style={{ fontSize: "14px", fontWeight: 800 }}>
+              Contratação pendente — {assinatura.plano_id === PLANO_PLUS_ID ? "Plus" : assinatura.plano_id === PLANO_PRO_ID ? "Pro" : "plano pago"}
+            </div>
+            <div style={{ fontSize: "12px", marginTop: "6px", lineHeight: 1.6 }}>
+              {tempoRestante > 0
+                ? "Finalize a autorização no Mercado Pago dentro do prazo. Esta tentativa expira ao completar 60 minutos desde o início."
+                : "O prazo de 60 minutos desta tentativa terminou. Clique em Atualizar informações para confirmar a expiração."}
+            </div>
+            <div
+              style={{
+                marginTop: "12px",
+                fontSize: "30px",
+                fontWeight: 900,
+                letterSpacing: "1px",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {tempoRestante > 0 ? formatarTempo(tempoRestante) : "00:00:00"}
+            </div>
+            <div style={{ fontSize: "12px", marginTop: "3px", fontWeight: 600 }}>
+              {tempoRestante > 0 ? "Tempo restante para concluir sua contratação" : "Tempo para autorização encerrado"}
+            </div>
+          </div>
+        )}
 
         {assinatura && (
           <div
@@ -529,7 +612,7 @@ export default function PlanoPage() {
                 fontWeight: 700,
               }}
             >
-              {aguardando ? "Contratação em andamento" : "Plano disponível"}
+              {"Plano disponível"}
             </div>
           )}
         </section>
@@ -555,77 +638,94 @@ export default function PlanoPage() {
             RECOMENDADO
           </div>
 
-          <div
-            style={{
-              color: "#1d4ed8",
-              fontSize: "12px",
-              fontWeight: 800,
-              letterSpacing: "1px",
-              marginTop: "17px",
-            }}
-          >
+
+          <div style={{ color: "#1d4ed8", fontSize: "12px", fontWeight: 800, letterSpacing: "1px", marginTop: "17px" }}>
             PLANO PLUS
           </div>
-
-          <h2
-            style={{
-              margin: "10px 0 0",
-              fontSize: "36px",
-              fontWeight: 800,
-              letterSpacing: "-1px",
-            }}
-          >
-            R$ 19,90
+          <h2 style={{ margin: "10px 0 0", fontSize: "36px", fontWeight: 800, letterSpacing: "-1px" }}>
+            R$ 29,90 <span style={{ fontSize: "14px", color: "#64748b" }}>/ mês</span>
           </h2>
-
-          <p style={estilos.descricao}>Por mês, com cobrança recorrente.</p>
-
-          <div
-            style={{
-              marginTop: "25px",
-              display: "grid",
-              gap: "15px",
-              color: "#334155",
-              fontSize: "14px",
-            }}
-          >
-            <div>✓ Todos os recursos do plano gratuito</div>
-            <div>✓ Remoção do limite mensal de orçamentos</div>
-            <div>✓ Mais liberdade para crescer com sua empresa</div>
+          <p style={estilos.descricao}>Para quem precisa de mais espaço para trabalhar.</p>
+          <div style={{ marginTop: "25px", display: "grid", gap: "15px", color: "#334155", fontSize: "14px" }}>
+            <div>✓ Todos os recursos disponíveis</div>
+            <div>✓ Até 50 orçamentos por mês</div>
+            <div>✓ Clientes e produtos sem limite</div>
           </div>
-
           <button
             className="plano-botao"
-            onClick={() => void contratarPlus()}
-            disabled={contratando || planoAtivo}
+            onClick={() => void contratarPlano("plus")}
+            disabled={contratando !== null || planoAtivo || aguardando}
             style={{
               ...estilos.botao,
               marginTop: "28px",
-              opacity: contratando || planoAtivo ? 0.65 : 1,
+              opacity:
+                contratando === "plus" || planoAtivo || pendentePlus || aguardando
+                  ? 0.65
+                  : 1,
               cursor:
-                contratando || planoAtivo ? "not-allowed" : "pointer",
+                contratando !== null || planoAtivo || aguardando
+                  ? "not-allowed"
+                  : "pointer",
             }}
           >
             {planoAtivo
-              ? "Seu plano já é PLUS"
-              : contratando
-              ? "Preparando contratação..."
-              : aguardando
-              ? "Continuar contratação"
-              : "Contratar PLUS"}
+              ? "Assinatura ativa"
+              : pendentePlus
+                ? "Finalize a contratação pendente"
+                : pendentePro
+                  ? "Aguarde finalizar a contratação do Pro"
+                  : contratando === "plus"
+                    ? "Preparando contratação..."
+                    : "Contratar PLUS"}
           </button>
+          <p style={{ margin: "13px 0 0", color: "#64748b", fontSize: "11px", lineHeight: 1.6, textAlign: "center" }}>
+            Autorização e pagamento realizados no ambiente seguro do Mercado Pago.
+          </p>
+        </section>
 
-          <p
+
+        <section style={estilos.cartao}>
+          <div style={{ color: "#64748b", fontSize: "12px", fontWeight: 800, letterSpacing: "1px" }}>
+            PLANO PRO
+          </div>
+          <h2 style={{ margin: "15px 0 0", fontSize: "36px", fontWeight: 800, letterSpacing: "-1px" }}>
+            R$ 59,90 <span style={{ fontSize: "14px", color: "#64748b" }}>/ mês</span>
+          </h2>
+          <p style={estilos.descricao}>Para empresas que criam orçamentos com frequência.</p>
+          <div style={{ marginTop: "25px", display: "grid", gap: "15px", color: "#334155", fontSize: "14px" }}>
+            <div>✓ Todos os recursos disponíveis</div>
+            <div>✓ Orçamentos ilimitados</div>
+            <div>✓ Clientes e produtos sem limite</div>
+          </div>
+          <button
+            className="plano-botao"
+            onClick={() => void contratarPlano("pro")}
+            disabled={contratando !== null || planoAtivo || aguardando}
             style={{
-              margin: "13px 0 0",
-              color: "#64748b",
-              fontSize: "11px",
-              lineHeight: 1.6,
-              textAlign: "center",
+              ...estilos.botao,
+              marginTop: "28px",
+              opacity:
+                contratando === "pro" || planoAtivo || pendentePro || aguardando
+                  ? 0.65
+                  : 1,
+              cursor:
+                contratando !== null || planoAtivo || aguardando
+                  ? "not-allowed"
+                  : "pointer",
             }}
           >
-            A autorização e o pagamento são realizados no ambiente seguro do
-            Mercado Pago.
+            {planoAtivo
+              ? "Assinatura ativa"
+              : pendentePro
+                ? "Finalize a contratação pendente"
+                : pendentePlus
+                  ? "Aguarde finalizar a contratação do Plus"
+                  : contratando === "pro"
+                    ? "Preparando contratação..."
+                    : "Contratar PRO"}
+          </button>
+          <p style={{ margin: "13px 0 0", color: "#64748b", fontSize: "11px", lineHeight: 1.6, textAlign: "center" }}>
+            Autorização e pagamento realizados no ambiente seguro do Mercado Pago.
           </p>
         </section>
       </div>
