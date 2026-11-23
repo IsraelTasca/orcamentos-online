@@ -102,6 +102,13 @@ const estilos = {
 export default function ClientesPage() {
   const [clientes, setClientes] = useState<Cliente[]>([])
   const [empresaId, setEmpresaId] = useState<string | null>(null)
+  const [totalClientes, setTotalClientes] = useState(0)
+  const [totalClientesAtivos, setTotalClientesAtivos] = useState(0)
+  const [totalResultados, setTotalResultados] = useState(0)
+  const [busca, setBusca] = useState('')
+  const [buscaAplicada, setBuscaAplicada] = useState('')
+  const [pagina, setPagina] = useState(1)
+  const clientesPorPagina = 20
 
   const [nome, setNome] = useState('')
   const [telefone, setTelefone] = useState('')
@@ -168,31 +175,49 @@ export default function ClientesPage() {
     setCarregando(false)
   }
 
-  async function carregarClientes(idEmpresa: string) {
-    const {
-      data,
-      error,
-    } = await supabase
+  async function carregarClientes(
+    idEmpresa: string,
+    paginaAtual = pagina,
+    termoBusca = buscaAplicada
+  ) {
+    const inicio = (paginaAtual - 1) * clientesPorPagina
+    const fim = inicio + clientesPorPagina - 1
+    const termo = termoBusca.trim()
+
+    let consulta = supabase
       .from('clientes')
       .select(
-        'id, nome, telefone, email, cpf_cnpj, endereco, observacoes, ativo'
+        'id, nome, telefone, email, cpf_cnpj, endereco, observacoes, ativo',
+        { count: 'exact' }
       )
       .eq('empresa_id', idEmpresa)
-      .order('nome', {
-        ascending: true,
-      })
+      .order('nome', { ascending: true })
+      .range(inicio, fim)
 
+    if (termo) consulta = consulta.ilike('nome', `%${termo}%`)
+
+    const { data, error, count } = await consulta
     if (error) {
       console.error(error)
-
-      setMensagem(
-        `Erro ao carregar clientes: ${error.message}`
-      )
-
+      setMensagem(`Erro ao carregar clientes: ${error.message}`)
       return
     }
 
+    const { count: total } = await supabase
+      .from('clientes')
+      .select('id', { count: 'exact', head: true })
+      .eq('empresa_id', idEmpresa)
+
+    const { count: ativos } = await supabase
+      .from('clientes')
+      .select('id', { count: 'exact', head: true })
+      .eq('empresa_id', idEmpresa)
+      .eq('ativo', true)
+
     setClientes(data ?? [])
+    setTotalResultados(count ?? 0)
+    setTotalClientes(total ?? 0)
+    setTotalClientesAtivos(ativos ?? 0)
   }
 
   function limparFormulario() {
@@ -450,9 +475,7 @@ export default function ClientesPage() {
     )
   }
 
-  const clientesAtivos = clientes.filter(
-    (cliente) => cliente.ativo
-  ).length
+  const clientesAtivos = totalClientesAtivos
 
   return (
     <main style={estilos.pagina}>
@@ -673,7 +696,7 @@ export default function ClientesPage() {
                 lineHeight: 1.2,
               }}
             >
-              {clientes.length}
+              {totalClientes}
             </strong>
           </div>
         </div>
@@ -949,12 +972,23 @@ export default function ClientesPage() {
               fontWeight: 700,
             }}
           >
-            {clientes.length}{' '}
-            {clientes.length === 1 ? 'cadastro' : 'cadastros'}
+            {totalResultados}{' '}
+            {totalResultados === 1 ? 'cadastro' : 'cadastros'}
           </span>
         </div>
 
-        {clientes.length === 0 ? (
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap', marginTop: '20px', marginBottom: '16px', padding: '18px', border: '1px solid #e2e8f0', borderRadius: '14px', background: '#f8fafc' }}>
+          <div style={{ flex: '1 1 280px' }}>
+            <label style={estilos.rotulo}>Buscar cliente</label>
+            <input className="clientes-campo" type="text" placeholder="Nome do cliente..." value={busca} onChange={(e) => setBusca(e.target.value)} style={estilos.campo} />
+          </div>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button className="clientes-botao" onClick={() => { setBusca(''); setBuscaAplicada(''); setPagina(1); if (empresaId) carregarClientes(empresaId, 1, '') }} style={estilos.botaoSecundario}>Limpar</button>
+            <button className="clientes-botao" onClick={() => { const termo = busca.trim(); setBuscaAplicada(termo); setPagina(1); if (empresaId) carregarClientes(empresaId, 1, termo) }} style={estilos.botaoPrimario}>🔍 Buscar</button>
+          </div>
+        </div>
+
+        {totalResultados === 0 ? (
           <div
             style={{
               ...estilos.cartao,
@@ -988,7 +1022,7 @@ export default function ClientesPage() {
                 fontSize: '16px',
               }}
             >
-              Nenhum cliente cadastrado ainda
+              {buscaAplicada ? 'Nenhum cliente encontrado' : 'Nenhum cliente cadastrado ainda'}
             </h3>
 
             <p
@@ -999,7 +1033,9 @@ export default function ClientesPage() {
                 lineHeight: 1.6,
               }}
             >
-              Utilize o formulário acima para cadastrar seu primeiro cliente.
+              {buscaAplicada
+                ? 'Não encontramos clientes com esse nome. Tente outro termo ou clique em Limpar.'
+                : 'Utilize o formulário acima para cadastrar seu primeiro cliente.'}
             </p>
           </div>
         ) : (
@@ -1260,6 +1296,15 @@ export default function ClientesPage() {
                 </div>
               </article>
             ))}
+          </div>
+        )}
+        {totalResultados > 0 && (
+          <div style={{ ...estilos.cartao, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', marginTop: '18px', padding: '16px 20px' }}>
+            <span style={{ color: '#64748b', fontSize: '13px' }}>Página {pagina} de {Math.max(1, Math.ceil(totalResultados / clientesPorPagina))}</span>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button className="clientes-botao" disabled={pagina <= 1} onClick={() => { const p = pagina - 1; setPagina(p); if (empresaId) carregarClientes(empresaId, p, buscaAplicada) }} style={{ ...estilos.botaoSecundario, ...(pagina <= 1 ? { background: '#f1f5f9', color: '#94a3b8', border: '1px solid #e2e8f0' } : {}), cursor: pagina <= 1 ? 'not-allowed' : 'pointer' }}>← Anterior</button>
+              <button className="clientes-botao" disabled={pagina >= Math.ceil(totalResultados / clientesPorPagina)} onClick={() => { const p = pagina + 1; setPagina(p); if (empresaId) carregarClientes(empresaId, p, buscaAplicada) }} style={{ ...estilos.botaoPrimario, ...(pagina >= Math.ceil(totalResultados / clientesPorPagina) ? { background: '#f1f5f9', color: '#94a3b8', border: '1px solid #e2e8f0' } : {}), cursor: pagina >= Math.ceil(totalResultados / clientesPorPagina) ? 'not-allowed' : 'pointer' }}>Próxima →</button>
+            </div>
           </div>
         )}
       </section>

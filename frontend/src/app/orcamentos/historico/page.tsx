@@ -31,11 +31,19 @@ export default function HistoricoOrcamentosPage() {
   const [semEmpresa, setSemEmpresa] = useState(false)
   const [mensagem, setMensagem] = useState('')
   const [busca, setBusca] = useState('')
+  const [buscaAplicada, setBuscaAplicada] = useState('')
   const [filtroStatus, setFiltroStatus] = useState('todos')
+  const [filtroStatusAplicado, setFiltroStatusAplicado] = useState('todos')
+  const [pagina, setPagina] = useState(1)
+  const [totalFiltrado, setTotalFiltrado] = useState(0)
+  const [resumo, setResumo] = useState({ total: 0, aprovados: 0, enviados: 0, valor: 0 })
+  const itensPorPagina = 20
+  const totalPaginas = Math.max(1, Math.ceil(totalFiltrado / itensPorPagina))
 
   useEffect(() => {
     carregarOrcamentos()
-  }, [])
+  }, [buscaAplicada, filtroStatusAplicado, pagina])
+
 
   async function carregarOrcamentos() {
     setCarregando(true)
@@ -75,65 +83,99 @@ export default function HistoricoOrcamentosPage() {
         return
       }
 
-      const {
-        data: dadosOrcamentos,
-        error: orcamentosError,
-      } = await supabase
+      // Indicadores gerais: independentes da página e dos filtros da tabela.
+      const { data: dadosResumo, error: resumoError } = await supabase
+        .rpc('resumo_orcamentos_empresa', { p_empresa_id: empresa.id })
+
+      if (resumoError) {
+        console.error(resumoError)
+        setMensagem(`Erro ao carregar indicadores: ${resumoError.message}`)
+        return
+      }
+
+      const resumoLinha = Array.isArray(dadosResumo) ? dadosResumo[0] : dadosResumo
+      setResumo({
+        total: Number(resumoLinha?.total_orcamentos ?? 0),
+        aprovados: Number(resumoLinha?.total_aprovados ?? 0),
+        enviados: Number(resumoLinha?.total_enviados ?? 0),
+        valor: Number(resumoLinha?.valor_total ?? 0),
+      })
+
+      const termo = buscaAplicada.trim()
+      let idsClientesBusca: string[] | null = null
+      if (termo) {
+        const { data: clientesEncontrados, error: buscaClientesError } = await supabase
+          .from('clientes')
+          .select('id')
+          .eq('empresa_id', empresa.id)
+          .ilike('nome', `%${termo}%`)
+
+        if (buscaClientesError) {
+          console.error(buscaClientesError)
+          setMensagem(`Erro ao pesquisar clientes: ${buscaClientesError.message}`)
+          return
+        }
+        idsClientesBusca = (clientesEncontrados ?? []).map((cliente) => cliente.id)
+      }
+
+      const inicio = (pagina - 1) * itensPorPagina
+      const fim = inicio + itensPorPagina - 1
+      let query = supabase
         .from('orcamentos')
-        .select(`
-          id,
-          numero,
-          status,
-          total,
-          created_at,
-          cliente_id
-        `)
+        .select('id, numero, status, total, created_at, cliente_id', { count: 'exact' })
         .eq('empresa_id', empresa.id)
-        .order('created_at', {
-          ascending: false,
-        })
+        .order('created_at', { ascending: false })
+        .range(inicio, fim)
+
+      if (filtroStatusAplicado !== 'todos') query = query.eq('status', filtroStatusAplicado)
+
+      if (termo) {
+        const numeroBusca = /^\d+$/.test(termo) ? Number(termo) : null
+        if (numeroBusca !== null && (idsClientesBusca?.length ?? 0) > 0) {
+          query = query.or(`numero.eq.${numeroBusca},cliente_id.in.(${idsClientesBusca!.join(',')})`)
+        } else if (numeroBusca !== null) {
+          query = query.eq('numero', numeroBusca)
+        } else if (idsClientesBusca && idsClientesBusca.length > 0) {
+          query = query.in('cliente_id', idsClientesBusca)
+        } else {
+          setOrcamentos([])
+          setTotalFiltrado(0)
+          return
+        }
+      }
+
+      const { data: dadosOrcamentos, error: orcamentosError, count } = await query
 
       if (orcamentosError) {
         console.error(orcamentosError)
         setMensagem(`Erro ao carregar orçamentos: ${orcamentosError.message}`)
-        setCarregando(false)
         return
       }
 
       const listaOrcamentos = (dadosOrcamentos as Orcamento[]) ?? []
+      setTotalFiltrado(count ?? 0)
 
-      const {
-        data: dadosClientes,
-        error: clientesError,
-      } = await supabase
-        .from('clientes')
-        .select(`
-          id,
-          nome
-        `)
-        .eq('empresa_id', empresa.id)
+      const idsClientes = [...new Set(listaOrcamentos.map((o) => o.cliente_id))]
+      let clientesPorId = new Map<string, string>()
+      if (idsClientes.length > 0) {
+        const { data: dadosClientes, error: clientesError } = await supabase
+          .from('clientes')
+          .select('id, nome')
+          .eq('empresa_id', empresa.id)
+          .in('id', idsClientes)
 
-      if (clientesError) {
-        console.error(clientesError)
-        setMensagem(`Erro ao carregar clientes: ${clientesError.message}`)
-        setCarregando(false)
-        return
+        if (clientesError) {
+          console.error(clientesError)
+          setMensagem(`Erro ao carregar clientes: ${clientesError.message}`)
+          return
+        }
+        clientesPorId = new Map((dadosClientes as Cliente[] ?? []).map((c) => [c.id, c.nome]))
       }
 
-      const listaClientes = (dadosClientes as Cliente[]) ?? []
-      const clientesPorId = new Map<string, string>()
-
-      listaClientes.forEach((cliente) => {
-        clientesPorId.set(cliente.id, cliente.nome)
-      })
-
-      const orcamentosComCliente = listaOrcamentos.map((orcamento) => ({
+      setOrcamentos(listaOrcamentos.map((orcamento) => ({
         ...orcamento,
-        cliente_nome:
-          clientesPorId.get(orcamento.cliente_id) ?? 'Cliente não encontrado',
-      }))
-
-      setOrcamentos(orcamentosComCliente)
+        cliente_nome: clientesPorId.get(orcamento.cliente_id) ?? 'Cliente não encontrado',
+      })))
     } catch (erro) {
       console.error(erro)
       setMensagem('Ocorreu um erro ao carregar os orçamentos.')
@@ -213,34 +255,12 @@ export default function HistoricoOrcamentosPage() {
     router.push(`/orcamentos/${id}`)
   }
 
-  const orcamentosFiltrados = orcamentos.filter((orcamento) => {
-    const termo = busca.trim().toLowerCase()
+  const orcamentosFiltrados = orcamentos
 
-    const correspondeBusca =
-      !termo ||
-      orcamento.cliente_nome.toLowerCase().includes(termo) ||
-      orcamento.numero.toString().includes(termo)
-
-    const correspondeStatus =
-      filtroStatus === 'todos' || orcamento.status === filtroStatus
-
-    return correspondeBusca && correspondeStatus
-  })
-
-  const totalOrcamentos = orcamentos.length
-
-  const totalAprovados = orcamentos.filter(
-    (orcamento) => orcamento.status === 'aprovado',
-  ).length
-
-  const totalEnviados = orcamentos.filter(
-    (orcamento) => orcamento.status === 'enviado',
-  ).length
-
-  const valorTotal = orcamentos.reduce(
-    (soma, orcamento) => soma + Number(orcamento.total || 0),
-    0,
-  )
+  const totalOrcamentos = resumo.total
+  const totalAprovados = resumo.aprovados
+  const totalEnviados = resumo.enviados
+  const valorTotal = resumo.valor
 
   const estilos = {
     pagina: {
@@ -828,6 +848,47 @@ export default function HistoricoOrcamentosPage() {
             </label>
           </div>
 
+          <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', padding: '0 24px 18px', background: '#fbfcfe' }}>
+            <button
+              onClick={() => {
+                setBusca('')
+                setFiltroStatus('todos')
+                setBuscaAplicada('')
+                setFiltroStatusAplicado('todos')
+                setPagina(1)
+              }}
+              style={{
+                border: '1px solid #cbd5e1',
+                borderRadius: '9px',
+                background: '#ffffff',
+                color: '#334155',
+                padding: '10px 15px',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              Limpar
+            </button>
+            <button
+              onClick={() => {
+                setBuscaAplicada(busca.trim())
+                setFiltroStatusAplicado(filtroStatus)
+                setPagina(1)
+              }}
+              style={{
+                border: 'none',
+                borderRadius: '9px',
+                background: '#2563eb',
+                color: '#ffffff',
+                padding: '10px 18px',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              🔍 Buscar
+            </button>
+          </div>
+
           {orcamentosFiltrados.length === 0 ? (
             <div
               style={{
@@ -898,6 +959,9 @@ export default function HistoricoOrcamentosPage() {
                   onClick={() => {
                     setBusca('')
                     setFiltroStatus('todos')
+                    setBuscaAplicada('')
+                    setFiltroStatusAplicado('todos')
+                    setPagina(1)
                   }}
                   style={{
                     border: '1px solid #cbd5e1',
@@ -929,7 +993,7 @@ export default function HistoricoOrcamentosPage() {
                 </strong>{' '}
                 de{' '}
                 <strong style={{ color: '#334155' }}>
-                  {orcamentos.length}
+                  {totalFiltrado}
                 </strong>{' '}
                 orçamento(s)
               </div>
@@ -1135,6 +1199,13 @@ export default function HistoricoOrcamentosPage() {
                     })}
                   </tbody>
                 </table>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', padding: '18px 24px', borderTop: '1px solid #edf0f5' }}>
+                <span style={{ color: '#64748b', fontSize: '13px' }}>Página {pagina} de {totalPaginas}</span>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button disabled={pagina <= 1} onClick={() => setPagina((p) => Math.max(1, p - 1))} style={{ border: '1px solid #cbd5e1', borderRadius: '8px', background: pagina <= 1 ? '#f1f5f9' : '#fff', color: pagina <= 1 ? '#94a3b8' : '#334155', padding: '9px 13px', fontWeight: 700, cursor: pagina <= 1 ? 'not-allowed' : 'pointer' }}>← Anterior</button>
+                  <button disabled={pagina >= totalPaginas} onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))} style={{ border: '1px solid #bfdbfe', borderRadius: '8px', background: pagina >= totalPaginas ? '#f1f5f9' : '#eff6ff', color: pagina >= totalPaginas ? '#94a3b8' : '#1d4ed8', padding: '9px 13px', fontWeight: 700, cursor: pagina >= totalPaginas ? 'not-allowed' : 'pointer' }}>Próxima →</button>
+                </div>
               </div>
             </>
           )}

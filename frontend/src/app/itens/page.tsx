@@ -100,6 +100,14 @@ const estilos = {
 export default function ItensPage() {
   const [itens, setItens] = useState<Item[]>([])
   const [empresaId, setEmpresaId] = useState<string | null>(null)
+  const [totalItens, setTotalItens] = useState(0)
+  const [totalResultados, setTotalResultados] = useState(0)
+  const [totalItensAtivos, setTotalItensAtivos] = useState(0)
+  const [busca, setBusca] = useState('')
+  const [buscaAplicada, setBuscaAplicada] = useState('')
+  const [pagina, setPagina] = useState(1)
+  const [carregandoLista, setCarregandoLista] = useState(false)
+  const ITENS_POR_PAGINA = 20
 
   const [nome, setNome] = useState('')
   const [descricao, setDescricao] = useState('')
@@ -164,31 +172,37 @@ export default function ItensPage() {
     setCarregando(false)
   }
 
-  async function carregarItens(idEmpresa: string) {
-    const {
-      data,
-      error,
-    } = await supabase
+  async function carregarItens(idEmpresa: string, paginaAtual = pagina, termoBusca = buscaAplicada) {
+    setCarregandoLista(true)
+    const inicio = (paginaAtual - 1) * ITENS_POR_PAGINA
+    const fim = inicio + ITENS_POR_PAGINA - 1
+    const termo = termoBusca.trim().replace(/[,%()]/g, '')
+
+    let consulta = supabase
       .from('itens')
-      .select(
-        'id, nome, descricao, codigo, valor, ativo'
-      )
+      .select('id, nome, descricao, codigo, valor, ativo', { count: 'exact' })
       .eq('empresa_id', idEmpresa)
-      .order('nome', {
-        ascending: true,
-      })
+      .order('nome', { ascending: true })
+    if (termo) consulta = consulta.or(`nome.ilike.%${termo}%,codigo.ilike.%${termo}%`)
+    consulta = consulta.range(inicio, fim)
 
-    if (error) {
-      console.error(error)
-
-      setMensagem(
-        `Erro ao carregar itens: ${error.message}`
-      )
-
+    const [paginaQuery, totalQuery, ativosQuery] = await Promise.all([
+      consulta,
+      supabase.from('itens').select('id', { count: 'exact', head: true }).eq('empresa_id', idEmpresa),
+      supabase.from('itens').select('id', { count: 'exact', head: true }).eq('empresa_id', idEmpresa).eq('ativo', true),
+    ])
+    const erro = paginaQuery.error || totalQuery.error || ativosQuery.error
+    if (erro) {
+      console.error(erro)
+      setMensagem(`Erro ao carregar itens: ${erro.message}`)
+      setCarregandoLista(false)
       return
     }
-
-    setItens(data ?? [])
+    setItens(paginaQuery.data ?? [])
+    setTotalResultados(paginaQuery.count ?? 0)
+    setTotalItens(totalQuery.count ?? 0)
+    setTotalItensAtivos(ativosQuery.count ?? 0)
+    setCarregandoLista(false)
   }
 
   function limparFormulario() {
@@ -464,9 +478,8 @@ export default function ItensPage() {
     )
   }
 
-  const itensAtivos = itens.filter(
-    (item) => item.ativo
-  ).length
+  const itensAtivos = totalItensAtivos
+  const totalPaginas = Math.max(1, Math.ceil(totalResultados / ITENS_POR_PAGINA))
 
   const formatarMoeda = (valor: number) =>
     Number(valor).toLocaleString('pt-BR', {
@@ -693,7 +706,7 @@ export default function ItensPage() {
                 lineHeight: 1.2,
               }}
             >
-              {itens.length}
+              {totalItens}
             </strong>
           </div>
         </div>
@@ -970,9 +983,19 @@ export default function ItensPage() {
               fontWeight: 700,
             }}
           >
-            {itens.length}{' '}
-            {itens.length === 1 ? 'cadastro' : 'cadastros'}
+            {totalItens}{' '}
+            {totalItens === 1 ? 'cadastro' : 'cadastros'}
           </span>
+        </div>
+
+        <div style={{ ...estilos.cartao, marginTop: '20px', padding: '18px', background: '#fbfcfe' }}>
+          <label style={estilos.rotulo}>Buscar item por nome ou código</label>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <input className="itens-campo" type="text" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Nome ou código do produto/serviço..." style={{ ...estilos.campo, flex: '1 1 260px' }} />
+            <button className="itens-botao" onClick={() => { const termo = busca.trim(); setBuscaAplicada(termo); setPagina(1); if (empresaId) void carregarItens(empresaId, 1, termo) }} style={estilos.botaoPrimario}>🔍 Buscar</button>
+            <button className="itens-botao" onClick={() => { setBusca(''); setBuscaAplicada(''); setPagina(1); if (empresaId) void carregarItens(empresaId, 1, '') }} style={estilos.botaoSecundario}>Limpar</button>
+          </div>
+          <p style={{ margin: '12px 0 0', color: '#64748b', fontSize: '12px' }}>{carregandoLista ? 'Buscando itens...' : `Exibindo ${itens.length} de ${totalResultados} item(ns)`}</p>
         </div>
 
         {itens.length === 0 ? (
@@ -1009,7 +1032,7 @@ export default function ItensPage() {
                 fontSize: '16px',
               }}
             >
-              Nenhum item cadastrado ainda
+              {buscaAplicada ? 'Nenhum item encontrado' : 'Nenhum item cadastrado ainda'}
             </h3>
 
             <p
@@ -1020,7 +1043,7 @@ export default function ItensPage() {
                 lineHeight: 1.6,
               }}
             >
-              Utilize o formulário acima para cadastrar seu primeiro produto ou serviço.
+              {buscaAplicada ? 'Tente outro nome ou código, ou clique em Limpar para voltar à lista completa.' : 'Utilize o formulário acima para cadastrar seu primeiro produto ou serviço.'}
             </p>
           </div>
         ) : (
@@ -1243,6 +1266,15 @@ export default function ItensPage() {
                 </div>
               </article>
             ))}
+          </div>
+        )}
+        {true && (
+          <div style={{ ...estilos.cartao, marginTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <span style={{ color: '#64748b', fontSize: '13px' }}>Página {pagina} de {totalPaginas}</span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button disabled={pagina <= 1 || carregandoLista} onClick={() => { const nova = pagina - 1; setPagina(nova); if (empresaId) void carregarItens(empresaId, nova) }} style={{ ...estilos.botaoSecundario, border: '1px solid #cbd5e1', background: pagina <= 1 || carregandoLista ? '#f1f5f9' : '#fff', color: pagina <= 1 || carregandoLista ? '#94a3b8' : '#334155', opacity: 1, cursor: pagina <= 1 || carregandoLista ? 'not-allowed' : 'pointer' }}>← Anterior</button>
+              <button disabled={pagina >= totalPaginas || carregandoLista} onClick={() => { const nova = pagina + 1; setPagina(nova); if (empresaId) void carregarItens(empresaId, nova) }} style={{ ...estilos.botaoPrimario, border: `1px solid ${pagina >= totalPaginas || carregandoLista ? '#cbd5e1' : '#bfdbfe'}`, background: pagina >= totalPaginas || carregandoLista ? '#f1f5f9' : '#eff6ff', color: pagina >= totalPaginas || carregandoLista ? '#94a3b8' : '#1d4ed8', opacity: 1, cursor: pagina >= totalPaginas || carregandoLista ? 'not-allowed' : 'pointer' }}>Próxima →</button>
+            </div>
           </div>
         )}
       </section>
