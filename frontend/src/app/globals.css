@@ -395,12 +395,13 @@ img {
 
 @media (max-width: 760px) {
   .app-sidebar {
-    inset: 0 0 auto 0;
+    position: relative;
+    inset: auto;
     width: 100%;
     height: auto;
-    max-height: 48vh;
+    max-height: none;
     padding: 12px 12px 10px;
-    overflow-y: auto;
+    overflow: visible;
     box-shadow: 0 4px 18px rgba(15, 23, 42, 0.12);
   }
 
