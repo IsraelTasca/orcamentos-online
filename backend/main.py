@@ -414,6 +414,13 @@ def teste_supabase():
     }
 
 
+# Rota leve para monitoramento de disponibilidade (ex.: UptimeRobot).
+# Não consulta Supabase nem executa operações de assinatura.
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health_check():
+    return {"status": "ok"}
+
+
 # ============================================================
 # TESTE DE AUTENTICAÇÃO
 # ============================================================
