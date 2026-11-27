@@ -46,6 +46,7 @@ export default function AppShell({ children }: AppShellProps) {
   const router = useRouter();
   const [saindo, setSaindo] = useState(false);
   const [erro, setErro] = useState("");
+  const [menuAberto, setMenuAberto] = useState(false);
 
   const paginasIndependentes =
     pathname === "/" ||
@@ -84,7 +85,16 @@ export default function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="app-shell">
-      <aside className="app-sidebar">
+      {menuAberto && (
+        <button
+          type="button"
+          className="app-menu-overlay"
+          aria-label="Fechar menu"
+          onClick={() => setMenuAberto(false)}
+        />
+      )}
+
+      <aside className={`app-sidebar${menuAberto ? " app-sidebar-open" : ""}`}>
         <div className="app-brand">
           <div className="app-brand-icon">O</div>
 
@@ -110,6 +120,7 @@ export default function AppShell({ children }: AppShellProps) {
                 href={link.caminho}
                 className={`app-nav-link${ativo ? " app-nav-link-active" : ""}`}
                 aria-current={ativo ? "page" : undefined}
+                onClick={() => setMenuAberto(false)}
               >
                 <span className="app-nav-icon" aria-hidden="true">
                   {link.simbolo}
@@ -151,7 +162,18 @@ export default function AppShell({ children }: AppShellProps) {
 
       <div className="app-main">
         <header className="app-topbar">
-          <div>
+          <button
+            type="button"
+            className="app-menu-toggle"
+            aria-label={menuAberto ? "Fechar menu" : "Abrir menu"}
+            aria-expanded={menuAberto}
+            onClick={() => setMenuAberto((aberto) => !aberto)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+          <div className="app-topbar-info">
             <span className="app-topbar-label">ÁREA DA EMPRESA</span>
             <span className="app-topbar-title">Painel de gestão</span>
           </div>
