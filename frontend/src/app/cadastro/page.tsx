@@ -13,6 +13,7 @@ export default function Cadastro() {
   const [carregando, setCarregando] = useState(false)
   const [mostrarSenha, setMostrarSenha] = useState(false)
   const [mostrarConfirmacao, setMostrarConfirmacao] = useState(false)
+  const [aceiteLegal, setAceiteLegal] = useState(false)
   const [tipoMensagem, setTipoMensagem] = useState<'erro' | 'info' | 'sucesso'>('info')
 
   async function cadastrar() {
@@ -28,6 +29,12 @@ export default function Cadastro() {
       return
     }
 
+    if (!aceiteLegal) {
+      setTipoMensagem('erro')
+      setMensagem('Você precisa aceitar os Termos de Uso e a Política de Privacidade para continuar.')
+      return
+    }
+
     setCarregando(true)
     setTipoMensagem('info')
     setMensagem('Criando sua conta...')
@@ -39,6 +46,10 @@ export default function Cadastro() {
         options: {
           data: {
             nome: nome.trim(),
+            aceite_legal: true,
+            aceite_legal_data: new Date().toISOString(),
+            termos_versao: '1.0',
+            privacidade_versao: '1.0',
           },
         },
       })
@@ -357,6 +368,40 @@ export default function Cadastro() {
                   </button>
                 </div>
               </div>
+
+              <div
+                className="cadastro-legal-accept"
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '10px',
+                  margin: '2px 0 6px',
+                  fontSize: '13px',
+                  lineHeight: 1.6,
+                  color: '#475569',
+                }}
+              >
+                <input
+                  id="cadastro-aceite-legal"
+                  type="checkbox"
+                  checked={aceiteLegal}
+                  onChange={(e) => setAceiteLegal(e.target.checked)}
+                  disabled={carregando}
+                  required
+                  style={{ marginTop: '4px', flexShrink: 0, accentColor: '#2563eb' }}
+                />
+                <label htmlFor="cadastro-aceite-legal">
+                  Li e aceito os{' '}
+                  <Link href="/termos" target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600 }}>
+                    Termos de Uso
+                  </Link>{' '}
+                  e a{' '}
+                  <Link href="/privacidade" target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600 }}>
+                    Política de Privacidade
+                  </Link>.
+                </label>
+              </div>
+
 
               <button
                 className="login-submit"
