@@ -88,38 +88,6 @@ export default function PlanoPage() {
     try {
       const token = await obterToken();
 
-      // Antes de consultar o backend de assinaturas, verifica se o usuário
-      // já possui uma empresa. A assinatura é vinculada à empresa.
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-
-      if (userError || !user) {
-        throw new Error("Não foi possível identificar o usuário autenticado.");
-      }
-
-      const {
-        data: empresa,
-        error: empresaError,
-      } = await supabase
-        .from("empresas")
-        .select("id")
-        .eq("usuario_id", user.id)
-        .maybeSingle();
-
-      if (empresaError) {
-        throw new Error(
-          `Não foi possível consultar sua empresa: ${empresaError.message}`
-        );
-      }
-
-      if (!empresa) {
-        setSemEmpresa(true);
-        setAssinatura(null);
-        return;
-      }
-
       const resposta = await fetch(`${API_URL}/assinaturas/minha`, {
         method: "GET",
         headers: {
@@ -131,6 +99,18 @@ export default function PlanoPage() {
       const dados = await resposta.json();
 
       if (!resposta.ok) {
+        // O backend já verifica a empresa vinculada ao usuário.
+        // Mantém a tela de cadastro para o 404 específico de empresa ausente.
+        if (
+          resposta.status === 404 &&
+          dados.detail === "Empresa do usuário não encontrada."
+        ) {
+          setSemEmpresa(true);
+          setAssinatura(null);
+          setPlanoAtual(null);
+          return;
+        }
+
         throw new Error(
           dados.detail || "Não foi possível consultar seu plano."
         );
